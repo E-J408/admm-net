@@ -54,7 +54,6 @@ def admm_for_us(y, b, xbase, ybase, lambda_val, sigma, opts=None):
     G0 = np.zeros((len_val + 1, len_val + 1), dtype=complex)
     Z0 = np.zeros((len_val + 1, len_val + 1), dtype=complex)
 
-
     HK = np.zeros((len_val, len_val), dtype=complex)
 
     phiK = np.zeros(len_val, dtype=complex)
@@ -76,8 +75,8 @@ def admm_for_us(y, b, xbase, ybase, lambda_val, sigma, opts=None):
 
         # update phi
         b_conj = np.conj(b)
-        diag_inv = 1.0 / (1.0 / (b_conj * b) + rho * np.ones(len_val))
-        phiK = np.diag(diag_inv) @ (np.diag(1.0 / b) @ y + rho * gK + zetaK)
+        diag_inv = np.linalg.inv(np.diag(b * b_conj)) + rho * np.ones(len_val)
+        phiK = np.linalg.inv(diag_inv) @ (np.linalg.inv(np.diag(b)) @ y + rho * gK + zetaK)
 
         # update H (采用简化的H版本)
         HK = admm_for_us_H_cvx_0(GK_hat, ZK_hat, rho, xbase, ybase, sigma)
@@ -128,25 +127,26 @@ def admm_for_us_H_cvx_0(GK_hat, ZK_hat, rho, xbase, ybase, sigma):
     # 目标函数：最小化 ||H - diag(GK_hat + ZK_hat/rho)||_F
     objective = cp.Minimize(cp.norm(H - diag_GZ, 'fro'))
 
+    # 引入额外约束条件以适配cvxpy
+    t = cp.Variable()
+
     # 约束条件
     constraints = [
-        cp.max(cp.abs(H)) * (2 * np.sqrt(Nb * Nd) * sigma + sigma ** 2) + cp.sum(H) <= 1
+        t * (2 * np.sqrt(Nb * Nd) * sigma + sigma ** 2) + cp.sum(H) <= 1,
+        H <= t,
+        -H <= t,
+        t >= 0
     ]
 
     # 求解
     prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.ECOS, verbose=False)
+    prob.solve(solver=cp.SCS, verbose=False)
 
-    if prob.status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
-        print(f"Warning: H optimization problem status: {prob.status}")
-        # 返回对角线矩阵
-        return np.diag(np.diag(GK_hat + ZK_hat / rho))
+    # 检查求解状态
+    if prob.status not in ["optimal", "optimal_inaccurate"]:
+        print(f"警告: 求解器返回状态: {prob.status}")
 
     H_opt = H.value
-    if H_opt is None:
-        # 如果求解失败，返回初始值
-        return np.diag(np.diag(GK_hat + ZK_hat / rho))
-
     return np.diag(H_opt)
 
 
@@ -166,13 +166,17 @@ def admm_for_us_G_svd(HK, phiK, lambda_val, ZK, rho):
     sd_Matrix = sd_Matrix - ZK / rho
 
     # SVD分解，显式指定
-    U, S, Vh = svd(sd_Matrix)
+    U, S_diag, Vh = svd(sd_Matrix)
 
     # 将小于0的奇异值置0
-    S[S < 0] = 0
+    S_diag[S_diag < 0] = 0
+
+    # 重建奇异值矩阵
+    S = np.zeros_like(sd_Matrix, dtype=complex)
+    np.fill_diagonal(S, S_diag)
 
     # 重构矩阵
-    GK = U @ np.diag(S) @ Vh.conj().T
+    GK = U @ S @ Vh
 
     return GK
 
