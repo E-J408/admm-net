@@ -9,6 +9,7 @@ class DifferentiableMatrixInverse(nn.Module):
     通过神经网络学习矩阵求逆的可微近似
     理论基础：Neumann级数展开
     """
+
     def __init__(self, dim, num_terms):
         super(DifferentiableMatrixInverse, self).__init__()
         self.dim = dim
@@ -40,6 +41,7 @@ class ComplexLinear(nn.Module):
     """
     复数线性变换的实值实现
     """
+
     def __init__(self, in_features, out_features):
         super(ComplexLinear, self).__init__()
         # 实部权重 [out_features, in_features]
@@ -66,29 +68,142 @@ class ComplexLinear(nn.Module):
                    F.linear(x_imag, self.weight_real, torch.zeros_like(self.bias_imag))
         return out_real, out_imag
 
+
 class PhiLayer(nn.Module):
-    """Phi 对应层"""
+    """Phi 对应层 解析解方案"""
 
-    def __init__(self, M, N):
+    def __init__(self, epsilon=1e-8):
         super(PhiLayer, self).__init__()
+        self.rho = nn.Parameter(torch.tensor(1.0))  # 可学习的ρ
+        self.epsilon = epsilon  # 用于防止除零的小常数
 
-    def forward(self, x):
-        """前向传播"""
-        pass
+    def forward(self, y, b, G, Z, l):
+        """
+
+        :param y: 观测向量，维度：[batch_size, MN]（复数）
+        :param b: 解调符号，维度：[batch_size, MN]（复数）
+        :param G: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
+        :param Z: 对偶变量，维度：[batch_size, MN+1, MN+1]（复数）
+        :param l: 当前层索引
+        """
+        batch_size, dim = y.shape
+        # 提取g^k和ζ^k
+        g = G[:, :-1, -1]  # [batch_size, MN]
+        zeta = Z[:, :-1, -1]  # [batch_size, MN]
+
+        # 计算|b|²，加epsilon防止除零
+        b_sq = torch.abs(b) ** 2 + self.epsilon  # [batch_size, MN]
+
+        # 计算ρ (使用softplus函数来保证正数)
+        rho_val = F.softplus(self.rho)  # rho > 0
+
+        # 核心计算式
+        weight = b_sq / (1 + rho_val * b_sq)
+        y_over_b = y / (b + self.epsilon)
+        right_term = y_over_b + rho_val * g + zeta
+        phi_new = weight * right_term
+
+        return phi_new
 
 
 class HLayer(nn.Module):
     """
     H 对应层
-    使用 Neumann级数展开
+    基于“对角矩阵松弛条件”的简化版本
     """
 
-    def __init__(self, M, N):
+    def __init__(self, M, N, epsilon=1e-8):
         super(HLayer, self).__init__()
+        self.M, self.N = M, N
+        self.dim = M * N
+        self.epsilon = epsilon
 
-    def forward(self, x):
-        """前向传播"""
-        pass
+        # 可学习的惩罚项参数 rho
+        self.rho = nn.Parameter(torch.tensor(1.0))
+
+        # 可学习的投影参数，用于满足软约束
+        self.projection_weight = nn.Parameter(torch.tensor(1.0))
+
+        # 轻量网络，用于学习从“目标向量”到“可行向量”的修正
+        self.correction_net = nn.Sequential(
+            nn.Linear(self.dim, 64),  # 输入维度MN
+            nn.ReLU(),
+            nn.Linear(64, self.dim),  # 输出维度MN
+            nn.Tanh()  # 输出范围[-1,1]
+        )
+
+    def forward(self, phi, G, Z, sigma, l):
+        """
+
+        :param phi:
+        :param G: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
+        :param Z: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
+        :param sigma: 解调符号上限
+        :param l: 层数
+        """
+        batch_size = G.shape[0]
+
+        # --- 步骤一：提取目标向量 t = diag(G + Z/ρ)
+        G_sub = G[:, :self.dim, :self.dim]  # [batch_size, MN, MN]
+        Z_sub = Z[:, :self.dim, :self.dim]
+        rho_val = F.softplus(self.rho)
+
+        # 计算G+Z/ρ，并取其对角元素实部（因为H是实对角矩阵）
+        T_matrix = G_sub + Z_sub / (rho_val + self.epsilon)
+        t = torch.diagonal(T_matrix, dim1=1, dim2=2).real  # [batch_size, MN]
+
+        # --- 步骤二：投影到可行集（软约束）
+        # 可行集约束：(2√(MN)σ + σ²) * ||h||_∞ + sum(h) ≤ 1
+        # 对于对角矩阵H=diag(h)，其谱范数||H||₂ = ||h||_∞，迹Tr(H) = sum(h)
+
+        # 计算约束中的常数部分 A = (2√(MN)σ + σ²)
+        A = 2 * torch.sqrt(torch.tensor(self.M * self.N).float()) * sigma + sigma ** 2
+        A = A.view(-1, 1)  # 调整为[batch_size, 1]
+
+        # 神经网络修正：让投影过程可学习
+        correction = self.correction_net(t)  # 学习一个修正量
+        t_corrected = t + 0.1 * correction  # 小幅修正，保持主方向
+
+        # 核心投影操作：缩放t_corrected使其满足约束
+        # 这是一个可微的近似投影，替代复杂的带约束优化
+        h_projected = self._differentiable_projection(t_corrected, A, batch_size)
+
+        # --- 步骤三： 构造对角矩阵 H = diag(h)
+        H = torch.diag_embed(h_projected)  # 形状: [batch_size, MN, MN]
+
+        return H
+
+    def _differentiable_projection(self, v, A, batch_size):
+        """
+        可微的投影函数，将向量v投影到约束集合C
+        C = { h | A * ||h||_∞ + sum(h) ≤ 1 }
+        使用软投影而非硬裁剪，保证梯度流通。
+        """
+        # 计算当前向量的约束值
+        l_inf_norm = torch.max(torch.abs(v), dim=1, keepdim=True)[0]  # L∞范数
+        trace_v = torch.sum(v, dim=1, keepdim=True)  # 迹（和）
+        constraint_val = A * l_inf_norm + trace_v  # 形状: [batch_size, 1]
+
+        # 计算缩放因子：如果违反约束，则按比例缩小
+        # 使用sigmoid确保缩放因子平滑且在(0,1)附近
+        scale = torch.sigmoid(self.projection_weight) / (constraint_val + self.epsilon)
+        scale = torch.clamp(scale, max=1.0)  # 不超过1，即只缩小不放大
+
+        # 应用缩放（软投影）
+        v_projected = v * scale
+
+        return v_projected
+
+    def get_constraint_info(self, h, sigma):
+        """
+        计算当前h向量的约束满足情况，用于监控训练
+        """
+        A = 2 * torch.sqrt(torch.tensor(self.M * self.N).float()) * sigma + sigma ** 2
+        l_inf_norm = torch.max(torch.abs(h), dim=1)[0]
+        trace_h = torch.sum(h, dim=1)
+        constraint_val = A * l_inf_norm + trace_h
+        violation = torch.relu(constraint_val - 1.0).mean()  # 违反程度
+        return violation.item()
 
 
 class GLayer(nn.Module):
@@ -134,7 +249,7 @@ class ADMMNet(nn.Module):
 
         # 初始化网络组件
         self.phiLayers = nn.ModuleList([
-            PhiLayer(M, N) for i in range(num_layers)
+            PhiLayer() for i in range(num_layers)
         ])
         self.hLayers = nn.ModuleList([
             HLayer(M, N) for i in range(num_layers)
@@ -164,7 +279,7 @@ class ADMMNet(nn.Module):
 
         for l in range(self.num_layers):
             # 第k层前向传播
-            phi = self.phiLayers[l](y, b, phi, G, Z, l)
+            phi = self.phiLayers[l](y, b, G, Z, l)
             H = self.hLayers[l](phi, G, Z, sigma, l)
             G = self.gLayers[l](phi, H, Z, l)
             Z = self.zLayers[l](phi, H, G, Z, l)
