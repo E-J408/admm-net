@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 
 class DifferentiableMatrixInverse(nn.Module):
@@ -77,14 +76,14 @@ class PhiLayer(nn.Module):
         self.rho = nn.Parameter(torch.tensor(1.0))  # 可学习的ρ
         self.epsilon = epsilon  # 用于防止除零的小常数
 
-    def forward(self, y, b, G, Z, l):
+    def forward(self, y, b, G, Z, k):
         """
 
         :param y: 观测向量，维度：[batch_size, MN]（复数）
         :param b: 解调符号，维度：[batch_size, MN]（复数）
         :param G: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
         :param Z: 对偶变量，维度：[batch_size, MN+1, MN+1]（复数）
-        :param l: 当前层索引
+        :param k: 当前层索引
         """
         batch_size, dim = y.shape
         # 提取g^k和ζ^k
@@ -132,14 +131,14 @@ class HLayer(nn.Module):
             nn.Tanh()  # 输出范围[-1,1]
         )
 
-    def forward(self, phi, G, Z, sigma, l):
+    def forward(self, phi, G, Z, sigma, k):
         """
 
         :param phi:
         :param G: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
         :param Z: 辅助变量，维度：[batch_size, MN+1, MN+1]（复数）
         :param sigma: 解调符号上限
-        :param l: 层数
+        :param k: 层数
         """
         batch_size = G.shape[0]
 
@@ -209,12 +208,144 @@ class HLayer(nn.Module):
 class GLayer(nn.Module):
     """G 对应层"""
 
-    def __init__(self, M, N):
+    def __init__(self, M, N, epsilon=1e-8, use_learnable_threshold=True):
         super(GLayer, self).__init__()
+        self.M, self.N = M, N
+        self.dim = M * N + 1  # G是[MN+1, MN+1]的矩阵
+        self.epsilon = epsilon
 
-    def forward(self, x):
-        """前向传播"""
-        pass
+        # 可学习的正则化参数
+        self.lambda_param = nn.Parameter(torch.tensor(0.1))
+
+        # 可学习的惩罚参数rho
+        self.rho = nn.Parameter(torch.tensor(1.0))
+
+        # 可学习的特征值阈值，默认值为0
+        if use_learnable_threshold:
+            self.threshold = nn.Parameter(torch.tensor(0.0))
+        else:
+            self.threshold = torch.tensor(0.0)
+
+        # 特征值修正网络，学习最优的非负化策略（存疑）
+        self.value_net = nn.Sequential(
+            nn.Linear(1, 16),  # 输入单个特征值
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # 输出[0,1]范围内的修正权重
+        )
+
+    def forward(self, phi, H, Z, k):
+        """
+        G层前向传播
+        :param phi: 当前φ的估计值[batch_size, MN]
+        :param H: 投影后的H矩阵[batch_size, MN, MN]
+        :param Z: 对偶变量[batch_size, MN+1, MN+1]
+        :param k: 当前层索引
+        :return: 更新后的半正定矩阵[batch_size, MN+1, MN+1]
+        """
+        batch_size = phi.shape[0]
+
+        # --- 步骤一：构造分块矩阵
+        G_matrix = self._build_block_matrix(phi, H, Z)
+
+        # --- 步骤二：特征分解
+        values, vectors = self._eigen_decomposition(G_matrix, k)
+
+        # --- 步骤三：特征修正
+        values_corrected = self._eigenvalues_projection(values, k)
+
+        # --- 步骤四：重构半正定矩阵
+        G_updated = self._rebuild_definite_matrix(values_corrected, vectors)
+
+        return G_updated
+
+    def _build_block_matrix(self, phi, H, Z):
+        """
+        根据公式构造分块矩阵
+        """
+        batch_size = phi.shape[0]
+
+        # 计算λ^{-2}（保证正性）
+        lambda_val = F.softplus(self.lambda_param)  # lambda > 0
+        lambda_inv = 1.0 / (lambda_val ** 2 + self.epsilon)  # λ^{-2}
+
+        # 构造分块矩阵
+        # 右上部分phi
+        phi_ex = phi.unsqueeze(-1)  # [batch_size, MN, 1]
+        # 左下部分phi^H
+        phi_H = phi.conj().unsqueeze(1)  # [batch_size, 1, MN]
+        # 右下部分
+        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv,
+                                        device=H.device, dtype=H.dtype)
+        # 组合
+        top = torch.cat([H, phi_ex], dim=2)  # [batch_size, MN, MN+1]
+        bottom = torch.cat([phi_H, lambda_matrix_full], dim=2)  # [batch_size, 1, MN+1]
+        block_matrix = torch.cat([top, bottom], dim=1)  # [batch_size, MN+1, MN+1]
+
+        # 相减运算
+        rho_val = F.softplus(self.rho)
+        G_matrix = block_matrix - (1.0 / (rho_val + self.epsilon)) * Z
+
+        return G_matrix
+
+    def _eigen_decomposition(self, matrix, k):
+        """
+        特征分解
+        :param matrix: 构造的分块矩阵
+        :param k: 网络层数
+        :return: values, vectors: 特征值和特征向量
+        """
+
+        # 确保矩阵是Hermitian的（强制对称）
+        matrix_hermitian = 0.5 * (matrix + matrix.transpose(1, 2).conj())
+
+        values, vectors = torch.linalg.eigh(matrix_hermitian)
+
+        return values, vectors
+
+    def _eigenvalues_projection(self, values, k):
+        """
+        可学习的特征值处理
+        替代固定的max(0, λ)操作
+        :param values: 特征值矩阵 [batch_size, dim]
+        :param k: 层数
+        :return: 处理过的特征值矩阵 [batch_size, dim]
+        """
+        batch_size, dim = values.shape
+
+        # 可学习阈值
+        threshold = torch.sigmoid(self.threshold)
+
+        # 对每个特征值独立处理
+        processed_values = []
+        for i in range(dim):
+            eig_val = values[:, i:i + 1]  # 当前特征值 [batch_size, 1]
+            # 非负化
+            base = F.softplus(eig_val - threshold)
+            # 可学习的缩放因子
+            scale = self.value_net(eig_val.abs())
+            eig_processed = base * scale
+            processed_values.append(eig_processed)
+
+        return torch.cat(processed_values, dim=1)  # [batch_size, dim]
+
+    def _rebuild_definite_matrix(self, values, vectors):
+        """
+        重构半正定矩阵
+        :param values: 特征值矩阵 [batch_size, dim]
+        :param vectors: 特征向量矩阵 [batch_size, dim, dim]
+        :return: 该轮次的G [batch_size, dim, dim]
+        """
+        # 构造对角特征值矩阵
+        eig_diag = torch.diag_embed(values)
+
+        # 计算 G = U Λ U^H
+        G = torch.bmm(vectors, torch.bmm(eig_diag, vectors.tanspose(1, 2).conj()))
+
+        # 强制Hermitian
+        G = 0.5 * (G + G.transpose(1, 2).conj())
+
+        return G
 
 
 class ZLayer(nn.Module):
@@ -249,16 +380,16 @@ class ADMMNet(nn.Module):
 
         # 初始化网络组件
         self.phiLayers = nn.ModuleList([
-            PhiLayer() for i in range(num_layers)
+            PhiLayer() for _ in range(num_layers)
         ])
         self.hLayers = nn.ModuleList([
-            HLayer(M, N) for i in range(num_layers)
+            HLayer(M, N) for _ in range(num_layers)
         ])
         self.gLayers = nn.ModuleList([
-            GLayer(M, N) for i in range(num_layers)
+            GLayer(M, N) for _ in range(num_layers)
         ])
         self.zLayers = nn.ModuleList([
-            ZLayer(M, N) for i in range(num_layers)
+            ZLayer(M, N) for _ in range(num_layers)
         ])
 
         self.peakSearchLayer = PeakSearchLayer(M, N, L)
@@ -277,12 +408,12 @@ class ADMMNet(nn.Module):
         Z = torch.zeros(batch_size, M * N + 1, M * N + 1)
         phi = torch.zeros(batch_size, M * N)
 
-        for l in range(self.num_layers):
-            # 第k层前向传播
-            phi = self.phiLayers[l](y, b, G, Z, l)
-            H = self.hLayers[l](phi, G, Z, sigma, l)
-            G = self.gLayers[l](phi, H, Z, l)
-            Z = self.zLayers[l](phi, H, G, Z, l)
+        for k in range(self.num_layers):
+            # 第l层前向传播
+            phi = self.phiLayers[k](y, b, G, Z, k)
+            H = self.hLayers[k](phi, G, Z, sigma, k)
+            G = self.gLayers[k](phi, H, Z, k)
+            Z = self.zLayers[k](phi, H, G, Z, k)
 
         # 谱峰搜索
         tau_est, f_est = self.peakSearchLayer(phi, b)
