@@ -351,12 +351,121 @@ class GLayer(nn.Module):
 class ZLayer(nn.Module):
     """Z 对应层"""
 
-    def __init__(self, M, N):
+    def __init__(self, M, N, epsilon=1e-8):
         super(ZLayer, self).__init__()
+        self.M, self.N = M, N
+        self.dim_h = M * N
+        self.dim_z = M * N + 1
+        self.epsilon = epsilon
 
-    def forward(self, x):
-        """前向传播"""
-        pass
+        # 设置可学习参数
+        self.rho = nn.Parameter(torch.tensor(1.0))
+        self.lambda_param = nn.Parameter(torch.tensor(1.0))
+
+        # 残差缩放网络（可选）
+        # 输入：残差矩阵的扁平化特征 输出：逐元素的缩放因子
+        self.residual_scale_net = nn.Sequential(
+            nn.Linear(2, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # 输出[0,1]范围内的缩放因子
+        )
+
+        # 步长调整网络（替代固定步长rho）
+        self.step_adjust_net = nn.Sequential(
+            nn.Linear(3, 8),  # 输入：[k, ρ, 残差大小]
+            nn.ReLU(),
+            nn.Linear(8, 1),
+            nn.Sigmoid()  # 输出[0,1]范围内的步长调整因子
+        )
+
+    def forward(self, phi, H, G, Z_prev, k):
+        """
+        :param phi: 当前φ向量 [batch_size, dim_h] (复数)
+        :param H: 当前H矩阵 [batch_size, dim_h, dim_h] (实数对角矩阵)
+        :param G: 当前G矩阵 [batch_size, dim_z, dim_z] (复数)
+        :param Z_prev: 上一轮的Z矩阵 [batch_size, dim_z, dim_z] (复数)
+        :param k: 当前层索引
+        :return: Z_new: 更新后的Z矩阵 [batch_size, dim_z, dim_z]
+        """
+        batch_size = phi.shape[0]
+
+        # ---步骤一：构造约束矩阵
+        constraint_matrix = self._build_constraint_matrix(phi, H)
+
+        # ---步骤二：计算残差矩阵
+        residual_matrix = G - constraint_matrix
+
+        # ---步骤三：计算基础步长（保证正性）
+        rho_base = F.softplus(self.rho)
+
+        # ---步骤四：计算自适应步长
+        adaptive_rho = self._compute_adaptive_step(k, rho_base, residual_matrix)
+
+        # ---步骤五：更新Z矩阵
+        Z_new = Z_prev + adaptive_rho * residual_matrix
+
+        return Z_new
+
+    def _build_constraint_matrix(self, phi, H):
+        """
+        构造约束矩阵: [[H, φ], [φ^H, λ^{-2}]]
+        对应公式(4.33)中的分块矩阵
+        """
+        batch_size = phi.shape[0]
+
+        # 计算λ^{-2}，保证正性
+        lambda_val = F.softplus(self.lambda_param)
+        lambda_inv = 1.0 / (lambda_val ** 2 + self.epsilon)
+
+        # 构造分块矩阵
+        # 右上部分phi
+        phi_ex = phi.unsqueeze(-1)  # [batch_size, dim_h, 1]
+        # 左下部分phi^H
+        phi_H = phi.conj().unsqueeze(1)  # [batch_size, 1, dim_h]
+        # 右下部分
+        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv,
+                                        device=H.device, dtype=H.dtype)
+        # 组合
+        top = torch.cat([H, phi_ex], dim=2)  # [batch_size, dim_h, dim_h+1]
+        bottom = torch.cat([phi_H, lambda_matrix_full], dim=2)  # [batch_size, 1, dim_h+1]
+        constraint_matrix = torch.cat([top, bottom], dim=1)  # [batch_size, dim_h+1, dim_h+1]
+
+        return constraint_matrix
+
+    def _compute_adaptive_step(self, k, rho_base, residual_matrix):
+        """
+        计算自适应步长
+        :param k: 当前层索引
+        :param rho_base: 基础步长
+        :param residual_matrix: 残差矩阵 [batch_size, dim_h+1, dim_h+1]
+        :return: 自适应步长
+        """
+        batch_size = residual_matrix.shape[0]
+
+        # 计算残差范数 Frobenius范数
+        residual_norm = torch.norm(residual_matrix, dim=[1, 2], p='fro')  # [batch_size]
+
+        # 归一化特征
+        k_norm = torch.tensor(k / 10.0, device=residual_matrix.device).repeat(batch_size)
+        rho_norm = torch.full((batch_size,), rho_base.item(), device=residual_matrix.device)
+        res_norm = residual_norm / (residual_norm.mean() + self.epsilon)
+
+        # 特征向量
+        features = torch.stack([k_norm, rho_norm, res_norm], dim=1)
+
+        # 通过网络获取缩放因子
+        scale_factor = self.residual_scale_net(features)  # [batch_size, 1]
+
+        # 映射到[0.5, 2.0]
+        scale_factor = 0.5 + 1.5 * scale_factor
+
+        # 计算步长
+        adaptive_rho = rho_base * scale_factor.squeeze(1)  # [batch_size]
+
+        # 调整为[batch_size, 1, 1]
+        return adaptive_rho.unsqueeze(-1).unsqueeze(-1)
+
 
 
 class PeakSearchLayer(nn.Module):
