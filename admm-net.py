@@ -466,6 +466,22 @@ class ZLayer(nn.Module):
         # 调整为[batch_size, 1, 1]
         return adaptive_rho.unsqueeze(-1).unsqueeze(-1)
 
+    def compute_dual_gap(self, G, H, phi):
+        """
+        计算对偶间隔，用于监控算法收敛
+        对偶间隔 = ||G - 约束矩阵||_F
+        """
+        constraint_matrix = self._construct_constraint_matrix(H, phi)
+        dual_gap = torch.norm(G - constraint_matrix, dim=[1, 2], p='fro')
+        return dual_gap.mean().item()
+
+    def get_parameters(self):
+        """获取当前参数值"""
+        return {
+            'rho': F.softplus(self.rho).item(),
+            'lambda': F.softplus(self.lambda_param).item()
+        }
+
 
 
 class PeakSearchLayer(nn.Module):
