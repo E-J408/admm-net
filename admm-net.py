@@ -487,12 +487,141 @@ class ZLayer(nn.Module):
 class PeakSearchLayer(nn.Module):
     """峰值搜索层"""
 
-    def __init__(self, M, N, L):
+    def __init__(self, M, N, L=3, hidden_dim=128, num_heads=4):
         super(PeakSearchLayer, self).__init__()
+        self.M, self.N, self.L_max = M, N, L
+        self.dim = M * N
 
-    def forward(self, x):
-        """前向传播"""
-        pass
+        # 1. 复数特征提取（实部+虚部 -> 特征向量）
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(2 * self.dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+
+        # 2. 位置编码
+        self.position_encoder = self._create_position_encoding()
+
+        # 3. 多头注意力机制
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=0.1
+        )
+
+        # 4. 峰值特征提取
+        self.peak_extractor = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, hidden_dim // 8),
+            nn.ReLU()
+        )
+
+        # 5. 参数回归头
+        self.tau_regressor = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim // 8, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Sigmoid()  # 输出为[0, 1]
+            ) for _ in range(self.L_max)
+        ])
+        self.f_regressor = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim // 8, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Tanh()  # f ∈ [-0.5, 0.5]
+            ) for _ in range(self.L_max)
+        ])
+
+        # 6. 目标存在置信度
+        self.confidence_net = nn.Sequential(
+            nn.Linear(hidden_dim // 8, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # 输出
+        )
+
+    def _create_position_encoding(self):
+        """创建位置编码"""
+        tau_grid = torch.linspace(0, 1, self.M, requires_grad=False)
+        f_grid = torch.linspace(-0.5, 0.5, self.N, requires_grad=False)
+
+        # 创建网格
+        tau_grid, f_grid = torch.meshgrid(tau_grid, f_grid, indexing='ij')
+
+        # 扁平并拼接
+        position_encoding = torch.stack([tau_grid.flatten(), f_grid.flatten()], dim=1)  # [M*N, 2]
+
+        return nn.Parameter(position_encoding, requires_grad=True)
+
+    def forward(self, phi, b=None):
+        """
+
+        :param phi: [batch_size, MN] (复数)
+        :param b: 解调符号 [batch_size, MN] (可选)
+        :return:
+            tau_est: 时延估计 [batch_size, L_max]
+            f_est: 多普勒估计 [batch_size, L_max]
+            confidences: 置信度 [batch_size, L_max]
+        """
+        batch_size = phi.shape[0]
+
+        # 1. 复数特征提取
+        phi_real = phi.real
+        phi_imag = phi.imag
+        # 拼接实部虚部
+        # 后续可以设计与 b 进行拼接
+        features = torch.cat([phi_real, phi_imag], dim=1)
+        x = self.feature_extractor(features)  # [batch_size, hidden_dim]
+
+        # 2. 位置编码
+        # 扩展x
+        x_ex = x.unsqueeze(1)  # [batch_size, 1, hidden_dim]
+        # 重复位置编码，匹配batch
+        pos_enc = self.position_encoder.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch_size, M*N, 2]
+        # 注意力机制
+        attended, _ = self.attention(
+            query=x_ex,
+            key=pos_enc,
+            value=pos_enc
+        )  # [batch_size, 1, hidden_dim]
+
+        # 融合原始特征和注意力特征
+        x_fixed = x + attended.squeeze(1)  # [batch_size, hidden_dim]
+
+        # 提取峰值特征
+        x_peak = self.peak_extractor(x_fixed)
+
+        # 参数回归
+        tau_estimates = []
+        f_estimates = []
+        confidences = []
+        for t in range(self.L_max):
+            # 为目标t生成特定的查询
+            query_offset = torch.tensor(t / self.L_max, device=phi.device)
+            target_features = x_peak + query_offset
+
+            tau_est = self.tau_regressor[t](target_features)
+            f_est = self.f_regressor[t](target_features)
+            confidence = self.confidence_net(target_features)
+            tau_estimates.append(tau_est)
+            f_estimates.append(f_est)
+            confidences.append(confidence)
+
+        # 堆叠结果
+        tau_est = torch.cat(tau_estimates, dim=1)  # [batch_size, L_max]
+        f_est = torch.cat(f_estimates, dim=1)  # [batch_size, L_max]
+        confidences = torch.cat(confidences, dim=1)  # [batch_size, L_max]
+
+        return tau_est, f_est, confidences
+
+
 
 
 class ADMMNet(nn.Module):
