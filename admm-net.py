@@ -620,16 +620,6 @@ class PeakSearchLayer(nn.Module):
 
         return tau_est, f_est, confidences
 
-
-    def _create_position_encoding(self):
-        """
-        创建时延-多普勒位置编码
-        帮助网络理解不同位置对应的(τ,f)参数
-        """
-        tau_grid = torch.linspace(0, 1, self.M)
-        f_grid = torch.linspace(-0.5, 0.5, self.N)
-
-
     def differentiable_spectrum(self, phi, tau_grid=None, f_grid=None):
         """
         工具1（未审核）
