@@ -6,8 +6,8 @@ if __name__ == '__main__':
         Nb=10,
         Nd=10,
         L_max=3,
-        snr_range=(5, 20),
-        data_dir='data/testDataGen5'
+        snr_range=(20, 20),
+        data_dir='data/testDataGen'
     )
 
     # 生成数据

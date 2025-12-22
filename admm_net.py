@@ -760,6 +760,6 @@ class ADMMNet(nn.Module):
             Z = self.zLayers[k](phi, H, G, Z, k)
 
         # 谱峰搜索
-        tau_est, f_est = self.peakSearchLayer(phi, b)
+        tau_est, f_est, confidences = self.peakSearchLayer(phi, b)
 
-        return tau_est, f_est
+        return tau_est, f_est, confidences
