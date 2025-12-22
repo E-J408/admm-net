@@ -487,12 +487,187 @@ class ZLayer(nn.Module):
 class PeakSearchLayer(nn.Module):
     """峰值搜索层"""
 
-    def __init__(self, M, N, L):
+    def __init__(self, M, N, L, hidden_dim=256, nums_heads=4):
+        """
+        :param M: 观测矩阵的行数
+        :param N: 观测矩阵的列数
+        :param L: 最大目标数
+        :param hidden_dim: 隐藏层维度
+        :param nums_heads: 多头注意力的头数
+        """
         super(PeakSearchLayer, self).__init__()
+        self.M, self.N, self.L = M, N, L
+        self.hidden_dim = hidden_dim
+        self.dim = M * N
+
+        # 复数到实数的转换
+        self.complex_to_real = nn.Sequential(
+            nn.Linear(2 * self.dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.dim),
+            nn.ReLU()
+        )
+
+        # 位置编码
+        self.position_encoding = self._create_position_encoding()
+
+        # 多头注意力机制
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=nums_heads,
+            batch_first=True,
+            dropout=0.1
+        )
+
+        # 峰值特征提取网络
+        self.peak_encoder = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, hidden_dim // 8),
+            nn.ReLU()
+        )
+
+        # 参数回归头
+        self.tau_regressor = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim // 8, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Sigmoid()  # tau ∈ [0, 1]
+            ) for _ in range(L)
+        ])
+        self.f_regressor = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim // 8, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Tanh  # f ∈ [-0.5, 0.5]
+            ) for _ in range(L)
+        ])
+
+        # 目标存在置信度
+        self.confidence_net = nn.Sequential(
+            nn.Linear(hidden_dim // 8, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # 存在概率
+        )
+
+        # 谱重建网络，用于监督学习（可选）
+        self.spectrum_reconstructor = nn.Sequential(
+            nn.Linear(hidden_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, self.dim),
+            nn.Tanh()
+        )
 
     def forward(self, x):
         """前向传播"""
         pass
+
+    def _create_position_encoding(self):
+        """
+        创建时延-多普勒位置编码
+        帮助网络理解不同位置对应的(τ,f)参数
+        """
+        tau_grid = torch.linspace(0, 1, self.M)
+        f_grid = torch.linspace(-0.5, 0.5, self.N)
+
+
+    def differentiable_spectrum(self, phi, tau_grid=None, f_grid=None):
+        """
+        工具1（未审核）
+        可微的频谱计算（替代传统的|φ^H a(τ,f)|^2）
+        用于可视化或损失计算
+        """
+        batch_size = phi.shape[0]
+
+        if tau_grid is None:
+            tau_grid = torch.linspace(0, 1, 100, device=phi.device)
+        if f_grid is None:
+            f_grid = torch.linspace(-0.5, 0.5, 100, device=phi.device)
+
+        # 创建网格
+        tau_mesh, f_mesh = torch.meshgrid(tau_grid, f_grid, indexing='ij')
+
+        # 将网格展平
+        tau_flat = tau_mesh.flatten()
+        f_flat = f_mesh.flatten()
+
+        # 构造导向矢量（可微版本）
+        steering_vectors = self._differentiable_steering_vector(tau_flat, f_flat)
+
+        # 计算频谱
+        spectrum = torch.abs(torch.matmul(phi, steering_vectors.conj().T))
+        spectrum = spectrum.reshape(batch_size, tau_grid.shape[0], f_grid.shape[0])
+
+        return spectrum
+
+    def _differentiable_steering_vector(self, tau, f):
+        """
+        工具2（未审核）
+        可微的导向矢量计算
+        a(τ, f) = exp(-j2π(nΔfτ - mTf))
+        其中n=0,...,N-1, m=0,...,M-1
+        """
+        # 创建索引
+        n = torch.arange(self.N, device=tau.device).float()
+        m = torch.arange(self.M, device=tau.device).float()
+
+        # 创建网格
+        n_grid, m_grid = torch.meshgrid(n, m, indexing='ij')
+        n_flat = n_grid.flatten()
+        m_flat = m_grid.flatten()
+
+        # 计算相位
+        # 注意：这里tau和f可能是向量
+        if len(tau.shape) == 1:
+            tau = tau.unsqueeze(1)
+            f = f.unsqueeze(1)
+
+        phase = -2 * torch.pi * (n_flat * tau.T - m_flat * f.T)
+
+        # 构造复数导向矢量
+        steering_vector = torch.complex(torch.cos(phase), torch.sin(phase))
+
+        return steering_vector.T  # [num_points, MN]
+
+    def peak_refinement(self, tau_est, f_est, phi, num_iter=3):
+        """
+        工具3（未审核）
+        峰值细化：通过可微优化精化估计
+        类似于可微的局部搜索
+        """
+        batch_size = tau_est.shape[0]
+
+        # 为每个估计创建可优化参数
+        tau_refined = nn.Parameter(tau_est.clone())
+        f_refined = nn.Parameter(f_est.clone())
+
+        # 简单的梯度下降精化
+        for _ in range(num_iter):
+            # 计算当前估计的频谱响应
+            steering_vectors = self._differentiable_steering_vector(
+                tau_refined.view(-1),
+                f_refined.view(-1)
+            )
+
+            # 计算响应
+            response = torch.matmul(phi, steering_vectors.conj().T)
+            response = response.reshape(batch_size, self.L_max)
+
+            # 最大化响应（最小化负响应）
+            loss = -torch.mean(torch.abs(response))
+
+            # 梯度更新（这里简化，实际应该用优化器）
+            # 注意：这需要在训练循环中完成
+
+        return tau_refined, f_refined
+
+
+
 
 
 class ADMMNet(nn.Module):
