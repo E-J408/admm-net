@@ -1,7 +1,5 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import json
 import time
@@ -51,7 +49,6 @@ def main(data_dir, train_name):
     print("配置参数:")
     for key, value in config.items():
         print(f"  {key}: {value}")
-
 
     # -----创建数据集和数据加载器--------
     print("\n" + "=" * 50)
@@ -106,6 +103,7 @@ def main(data_dir, train_name):
     # 参数分组优化：不同组件使用不同学习率
     param_groups = []
 
+
     # ADMM层参数（相对稳定，使用较小学习率）
     admm_params = []
     for name, param in model.named_parameters():
@@ -114,18 +112,10 @@ def main(data_dir, train_name):
     if admm_params:
         param_groups.append({'params': admm_params, 'lr': config['lr'] * 0.5})
 
-        # 峰值搜索层参数（需要更灵活的学习）
-    peak_params = []
-    for name, param in model.named_parameters():
-        if 'peakSearchLayer' in name:
-            peak_params.append(param)
-    if peak_params:
-        param_groups.append({'params': peak_params, 'lr': config['lr']})
-
     # 其他参数
     other_params = []
     for name, param in model.named_parameters():
-        if param not in admm_params and param not in peak_params:
+        if not any(param is admm_param for admm_param in admm_params):
             other_params.append(param)
     if other_params:
         param_groups.append({'params': other_params, 'lr': config['lr']})
@@ -135,7 +125,7 @@ def main(data_dir, train_name):
     # 学习率调度器
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=10, T_mult=2, eta_min=1e-6
-    )  # 采用余弦退火学习率调度器，T0意为循环次数，Tmult意为循环次数的乘数，eta_min意为最小学习率
+    )  # 采用余弦退火学习率调度器，T0意为循环次数，T_mult意为循环次数的乘数，eta_min意为最小学习率
 
     # -----训练准备--------
     start_epoch = 0
@@ -227,16 +217,231 @@ def main(data_dir, train_name):
                       f'Loss: {total_loss.item():.6f} '
                       f'LR: {current_lr:.2e}')
 
+        # 计算训练损失
+        avg_train_loss = train_loss / train_batches if train_batches > 0 else 0
+        history['train_loss'].append(avg_train_loss)
 
+        # 验证阶段
+        model.eval()
+        val_loss = 0.0
+        val_batches = 0
+        tau_errors = []
+        f_errors = []
+        with torch.no_grad():
+            for batch_idx, batch_data in enumerate(val_loader):
+                y, b, tau_true, f_true, C, L_true, sigma = batch_data
+                y = y.to(config['device'])
+                b = b.to(config['device'])
+                tau_true = tau_true.to(config['device'])
+                f_true = f_true.to(config['device'])
+                L_true = L_true.to(config['device'])
+                sigma = sigma.to(config['device'])
 
+                # 前向传播
+                tau_est, f_est, confidences = model(y, b, sigma)
+                model_outputs = {
+                    'tau_est': tau_est,
+                    'f_est': f_est,
+                    'confidences': confidences
+                }
+                ground_truth = {
+                    'tau_true': tau_true,
+                    'f_true': f_true,
+                    'L_true': L_true,
+                    'y': y,
+                    'b': b
+                }
 
+                total_loss, loss_dict = criterion(model_outputs, ground_truth)
+                val_loss += total_loss.item()
+                val_batches += 1
 
+                # 计算参数估计误差
+                for i in range(len(L_true)):
+                    L = L_true[i].item()
+                    if L > 0:
+                        # 只计算前L个目标的误差
+                        tau_error = torch.sqrt(torch.mean(
+                            (tau_est[i, :L] - tau_true[i, :L]) ** 2
+                        )).item()
+                        f_error = torch.sqrt(torch.mean(
+                            (f_est[i, :L] - f_true[i, :L]) ** 2
+                        )).item()
 
+                        tau_errors.append(tau_error)
+                        f_errors.append(f_error)
 
+        # 计算验证损失
+        avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
+        history['val_loss'].append(avg_val_loss)
+        avg_tau_rmse = np.mean(tau_errors) if len(tau_errors) > 0 else 0
+        avg_f_rmse = np.mean(f_errors) if len(f_errors) > 0 else 0
+        history['tau_rmse'].append(avg_tau_rmse)
+        history['f_rmse'].append(avg_f_rmse)
+
+        current_lr = optimizer.param_groups[0]['lr']
+        history['lr'].append(current_lr)
+
+        epoch_time = time.time() - start_time
+
+        # 打印epoch结果
+        print(f"\nEpoch {epoch + 1}/{config['epochs']} - {epoch_time:.1f}s")
+        print(f"  训练损失: {avg_train_loss:.6f}")
+        print(f"  验证损失: {avg_val_loss:.6f}")
+        print(f"  τ RMSE: {avg_tau_rmse:.6f}")
+        print(f"  f RMSE: {avg_f_rmse:.6f}")
+        print(f"  学习率: {current_lr:.2e}")
+
+        # 学习率调度
+        scheduler.step()
+
+        # early stop和保存模型
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+
+            # 保存模型
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': best_val_loss,
+                'config': config,
+                'history': history
+            }, Path(config['checkpoint_dir']) / 'best_model.pth')
+            print(f"  保存模型: {train_name}.pth 验证损失: {avg_val_loss:.6f}")
+        else:
+            patience_counter += 1
+            print(f"  早停计数器: {patience_counter}/{patience}")
+
+        if patience_counter >= patience:
+            print(f"  早停: 训练结束")
+            break
+        # 保存训练历史
+        with open(Path(config['log_dir']) / 'training_history.json', 'w') as f:
+            # 转换为可JSON序列化的格式
+            history_serializable = {k: [float(x) for x in v] for k, v in history.items()}
+            json.dump(history_serializable, f, indent=2)
+
+        print("-" * 50)
+
+    # -------测试阶段--------
+    print("\n" + "=" * 50)
+    print("在测试集上评估最终模型...")
+
+    # 加载最佳模型
+    checkpoint = torch.load(Path(config['checkpoint_dir']) / 'best_model.pth')
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    test_loss = 0.0
+    test_batches = 0
+    test_tau_errors = []
+    test_f_errors = []
+    detection_stats = {
+        'true_positive': 0,
+        'false_positive': 0,
+        'false_negative': 0
+    }
+    with torch.no_grad():
+        for batch_idx, batch_data in enumerate(test_loader):
+            y, b, tau_true, f_true, C, L_true, sigma = batch_data
+            y = y.to(config['device'])
+            b = b.to(config['device'])
+            tau_true = tau_true.to(config['device'])
+            f_true = f_true.to(config['device'])
+            L_true = L_true.to(config['device'])
+            sigma = sigma.to(config['device'])
+
+            # 前向传播
+            tau_est, f_est, confidences = model(y, b, sigma)
+            model_outputs = {
+                'tau_est': tau_est,
+                'f_est': f_est,
+                'confidences': confidences
+            }
+            ground_truth = {
+                'tau_true': tau_true,
+                'f_true': f_true,
+                'L_true': L_true,
+                'y': y,
+                'b': b
+            }
+
+            # 计算损失
+            total_loss, loss_dict = criterion(model_outputs, ground_truth)
+            test_loss += total_loss.item()
+            test_batches += 1
+
+            # 计算检测统计
+            for i in range(len(L_true)):
+                L_true_i = L_true[i].item()
+                # 使用置信度阈值判断检测
+                conf_threshold = 0.5
+                detected_targets = torch.sum(confidences[i] > conf_threshold).item()
+
+                if L_true_i > 0 and detected_targets > 0:
+                    detection_stats['true_positive'] += min(L_true_i, detected_targets)
+                if detected_targets > L_true_i:
+                    detection_stats['false_positive'] += (detected_targets - L_true_i)
+                if L_true_i > detected_targets:
+                    detection_stats['false_negative'] += (L_true_i - detected_targets)
+
+            # 计算参数估计误差
+            for i in range(len(L_true)):
+                L = L_true[i].item()
+                if L > 0:
+                    tau_error = torch.sqrt(torch.mean(
+                        (tau_est[i, :L] - tau_true[i, :L]) ** 2
+                    )).item()
+                    f_error = torch.sqrt(torch.mean(
+                        (f_est[i, :L] - f_true[i, :L]) ** 2
+                    )).item()
+
+                    test_tau_errors.append(tau_error)
+                    test_f_errors.append(f_error)
+    # 计算测试指标
+    avg_test_loss = test_loss / test_batches if test_batches > 0 else 0
+    avg_tau_rmse = np.mean(test_tau_errors) if len(test_tau_errors) > 0 else 0
+    avg_f_rmse = np.mean(test_f_errors) if len(test_f_errors) > 0 else 0
+
+    # 计算检测指标
+    tp = detection_stats['true_positive']
+    fp = detection_stats['false_positive']
+    fn = detection_stats['false_negative']
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+    print(f"\n测试结果:")
+    print(f"  测试损失: {avg_test_loss:.6f}")
+    print(f"  τ RMSE: {avg_tau_rmse:.6f}")
+    print(f"  f RMSE: {avg_f_rmse:.6f}")
+    print(f"  精度率: {precision:.4f}")
+    print(f"  召回率: {recall:.4f}")
+    print(f"  F1 分数: {f1_score:.4f}")
+
+    # 保存测试结果
+    test_result = {
+        'test_loss': avg_test_loss,
+        'tau_rmse': avg_tau_rmse,
+        'f_rmse': avg_f_rmse,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1_score,
+        'detection_stats': detection_stats
+    }
+
+    with open(Path(config['log_dir']) / 'test_result.json', 'w') as f:
+        json.dump(test_result, f, indent=2)
+
+    print("\n" + "=" * 50)
+    print("训练结束")
 
 
 if __name__ == '__main__':
     # 训练名称
-    train_name = time.strftime("%Y%m%d-%H-%M")
-    data_dir = 'data/testDataGen'
-    main(data_dir, train_name)
+    cur_train_name = time.strftime("%Y%m%d-%H-%M")
+    cur_data_dir = 'data/fixSNR20L3'
+    main(cur_data_dir, cur_train_name)

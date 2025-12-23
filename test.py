@@ -7,7 +7,7 @@ if __name__ == '__main__':
         Nd=10,
         L_max=3,
         snr_range=(20, 20),
-        data_dir='data/testDataGen'
+        data_dir='data/fixSNR20L3'
     )
 
     # 生成数据
