@@ -268,6 +268,7 @@ class GLayer(nn.Module):
         # 计算λ^{-2}（保证正性）
         lambda_val = F.softplus(self.lambda_param)  # lambda > 0
         lambda_inv = 1.0 / (lambda_val ** 2 + self.epsilon)  # λ^{-2}
+        lambda_inv_scalar = lambda_inv.item()
 
         # 构造分块矩阵
         # 右上部分phi
@@ -275,7 +276,7 @@ class GLayer(nn.Module):
         # 左下部分phi^H
         phi_H = phi.conj().unsqueeze(1)  # [batch_size, 1, MN]
         # 右下部分
-        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv,
+        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv_scalar,
                                         device=H.device, dtype=H.dtype)
         # 组合
         top = torch.cat([H, phi_ex], dim=2)  # [batch_size, MN, MN+1]
@@ -300,6 +301,9 @@ class GLayer(nn.Module):
         matrix_hermitian = 0.5 * (matrix + matrix.transpose(1, 2).conj())
 
         values, vectors = torch.linalg.eigh(matrix_hermitian)
+
+        # 修改，断开梯度
+        vectors = vectors.detach().clone()  # 分离计算图，但保留值
 
         return values, vectors
 
@@ -336,11 +340,13 @@ class GLayer(nn.Module):
         :param vectors: 特征向量矩阵 [batch_size, dim, dim]
         :return: 该轮次的G [batch_size, dim, dim]
         """
+        value_complex = values.to(torch.complex64)
+
         # 构造对角特征值矩阵
-        eig_diag = torch.diag_embed(values)
+        eig_diag = torch.diag_embed(value_complex)
 
         # 计算 G = U Λ U^H
-        G = torch.bmm(vectors, torch.bmm(eig_diag, vectors.tanspose(1, 2).conj()))
+        G = torch.bmm(vectors, torch.bmm(eig_diag, vectors.transpose(1, 2).conj()))
 
         # 强制Hermitian
         G = 0.5 * (G + G.transpose(1, 2).conj())
@@ -365,9 +371,9 @@ class ZLayer(nn.Module):
         # 残差缩放网络（可选）
         # 输入：残差矩阵的扁平化特征 输出：逐元素的缩放因子
         self.residual_scale_net = nn.Sequential(
-            nn.Linear(2, 16),
+            nn.Linear(3, 32),
             nn.ReLU(),
-            nn.Linear(16, 1),
+            nn.Linear(32, 1),
             nn.Sigmoid()  # 输出[0,1]范围内的缩放因子
         )
 
@@ -417,6 +423,7 @@ class ZLayer(nn.Module):
         # 计算λ^{-2}，保证正性
         lambda_val = F.softplus(self.lambda_param)
         lambda_inv = 1.0 / (lambda_val ** 2 + self.epsilon)
+        lambda_inv_scalar = lambda_inv.item()
 
         # 构造分块矩阵
         # 右上部分phi
@@ -424,7 +431,7 @@ class ZLayer(nn.Module):
         # 左下部分phi^H
         phi_H = phi.conj().unsqueeze(1)  # [batch_size, 1, dim_h]
         # 右下部分
-        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv,
+        lambda_matrix_full = torch.full((batch_size, 1, 1), lambda_inv_scalar,
                                         device=H.device, dtype=H.dtype)
         # 组合
         top = torch.cat([H, phi_ex], dim=2)  # [batch_size, dim_h, dim_h+1]
@@ -501,6 +508,7 @@ class PeakSearchLayer(nn.Module):
 
         # 2. 位置编码
         self.position_encoder = self._create_position_encoding()
+        self.position_projection = nn.Linear(2, hidden_dim)
 
         # 3. 多头注意力机制
         self.attention = nn.MultiheadAttention(
@@ -584,6 +592,7 @@ class PeakSearchLayer(nn.Module):
         x_ex = x.unsqueeze(1)  # [batch_size, 1, hidden_dim]
         # 重复位置编码，匹配batch
         pos_enc = self.position_encoder.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch_size, M*N, 2]
+        pos_enc = self.position_projection(pos_enc)  # [batch_size, M*N, hidden_dim]
         # 注意力机制
         attended, _ = self.attention(
             query=x_ex,
@@ -748,8 +757,9 @@ class ADMMNet(nn.Module):
         batch_size = y.shape[0]
         M = self.M
         N = self.N
-        G = torch.zeros(batch_size, M * N + 1, M * N + 1)
-        Z = torch.zeros(batch_size, M * N + 1, M * N + 1)
+        device = y.device
+        G = torch.zeros(batch_size, M * N + 1, M * N + 1, device=device)
+        Z = torch.zeros(batch_size, M * N + 1, M * N + 1, device=device)
         phi = torch.zeros(batch_size, M * N)
 
         for k in range(self.num_layers):
@@ -762,4 +772,4 @@ class ADMMNet(nn.Module):
         # 谱峰搜索
         tau_est, f_est, confidences = self.peakSearchLayer(phi, b)
 
-        return tau_est, f_est, confidences
+        return tau_est, f_est, confidences, phi
