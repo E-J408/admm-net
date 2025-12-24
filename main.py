@@ -108,9 +108,12 @@ def main():
         'iter': 3
     }
     res_admm = alt_peak_search(alt_peak_search_base, alt_peak_search_opts)
+    # 按照峰值大小排序
+    res_admm = sorted(res_admm, key=lambda x: x[2], reverse=True)
+
     print(f"找到 {len(res_admm)} 个峰值:")
     for i, peak in enumerate(res_admm):
-        print(f"{i+1}. {peak}")
+        print(f"{i + 1}. {peak}")
 
 
 

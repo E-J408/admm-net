@@ -17,7 +17,7 @@ def main(data_dir, train_name):
     config = {
         # 数据参数
         'data_dir': data_dir,
-        'batch_size': 32,
+        'batch_size': 256,
         'num_workers': 4,
 
         # 模型参数
@@ -30,7 +30,7 @@ def main(data_dir, train_name):
         # 训练参数
         'epochs': 100,
         'lr': 1e-3,
-        'weight_decay': 1e-4,
+        'weight_decay': 1e-3,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
 
         # 模型保存参数
@@ -148,7 +148,7 @@ def main(data_dir, train_name):
     history = {
         'train_loss': [], 'val_loss': [],
         'tau_rmse': [], 'f_rmse': [],
-        'learning_rate': []
+        'lr': []
     }
 
     # -----训练循环--------
@@ -176,13 +176,14 @@ def main(data_dir, train_name):
             # 前向传播
             optimizer.zero_grad()
 
-            tau_est, f_est, confidences = model(y, b, sigma)
+            tau_est, f_est, confidences, phi = model(y, b, sigma)
 
             # 转换为结果字典
             model_outputs = {
                 'tau_est': tau_est,
                 'f_est': f_est,
-                'confidences': confidences
+                'confidences': confidences,
+                'phi_final': phi
             }
 
             # 准备真实值字典
@@ -238,11 +239,12 @@ def main(data_dir, train_name):
                 sigma = sigma.to(config['device'])
 
                 # 前向传播
-                tau_est, f_est, confidences = model(y, b, sigma)
+                tau_est, f_est, confidences, phi = model(y, b, sigma)
                 model_outputs = {
                     'tau_est': tau_est,
                     'f_est': f_est,
-                    'confidences': confidences
+                    'confidences': confidences,
+                    'phi_final': phi
                 }
                 ground_truth = {
                     'tau_true': tau_true,
@@ -331,7 +333,7 @@ def main(data_dir, train_name):
     print("在测试集上评估最终模型...")
 
     # 加载最佳模型
-    checkpoint = torch.load(Path(config['checkpoint_dir']) / 'best_model.pth')
+    checkpoint = torch.load(Path(config['checkpoint_dir']) / 'best_model.pth', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
@@ -355,11 +357,12 @@ def main(data_dir, train_name):
             sigma = sigma.to(config['device'])
 
             # 前向传播
-            tau_est, f_est, confidences = model(y, b, sigma)
+            tau_est, f_est, confidences, phi = model(y, b, sigma)
             model_outputs = {
                 'tau_est': tau_est,
                 'f_est': f_est,
-                'confidences': confidences
+                'confidences': confidences,
+                'phi_final': phi
             }
             ground_truth = {
                 'tau_true': tau_true,

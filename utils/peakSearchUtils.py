@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import ndimage
 import matplotlib.colors as colors
+from skimage.morphology import local_maxima
 
 
 def peak_search_func(phi, x, x_base, y, y_base):
@@ -101,15 +102,20 @@ def alt_peak_search(func_opts, opts=None):
     reduce_factor, max_iter = search_opts['reducefactor'], search_opts['iter']
 
     # 生成初始搜索网格
-    axis_x = np.arange(xmin, xmax, xstep)
-    axis_y = np.arange(ymin, ymax, ystep)
+    axis_x = np.arange(xmin, xmax-xstep, xstep)
+    axis_y = np.arange(ymin, ymax-xstep, ystep)
+
+    # 检查网格是否为空
+    if len(axis_x) == 0 or len(axis_y) == 0:
+        return np.zeros((0, 3))
+
     axis_X, axis_Y = np.meshgrid(axis_x, axis_y)
 
     # 计算整个搜索区域上的目标函数响应面
     axis_Z = peak_search(phi, axis_X, x_base, axis_Y, y_base)
 
     # 寻找所有局部极大值点的位置
-    regional_maxima = find_regional_maxima(axis_Z)
+    regional_maxima = local_maxima(axis_Z, connectivity=2)
     x_pos, y_pos = np.where(regional_maxima)
     num_peaks = len(x_pos)
 
@@ -156,6 +162,12 @@ def alt_peak_search(func_opts, opts=None):
             local_max_val = np.max(local_Z)
             max_pos = np.unravel_index(np.argmax(local_Z), local_Z.shape)
 
+            # 修正
+            local_Z_max = np.max(local_Z)
+            # 创建掩码，只保留最大值位置
+            local_Z_mask = (local_Z == local_Z_max)
+            max_positions = np.where(local_Z_mask)
+
             # 更新该峰值的最佳估计值：位置和幅值
             refined_result[k, 0] = local_X[max_pos]  # x位置
             refined_result[k, 1] = local_Y[max_pos]  # y位置
@@ -182,6 +194,8 @@ def find_regional_maxima(image, footprint=None):
     # regional_max = regional_max & (image > 0)  # 只保留正值区域
 
     return regional_max
+
+#
 
 
 def plot_peaks(func_opts, ground_truth, opts=None):
@@ -240,7 +254,7 @@ def plot_peaks(func_opts, ground_truth, opts=None):
     axis_Z_truth = ground_truth_matrix(tau, f, axis_X, axis_Y, xstep, ystep)
 
     axis_Z_max = np.max(axis_Z)
-    axis_Z_peak = axis_Z * find_regional_maxima(axis_Z)
+    axis_Z_peak = axis_Z * local_maxima(axis_Z, connectivity=2)
 
     # 创建图形
     fig = plt.figure(figsize=(12, 8))
@@ -388,6 +402,20 @@ def test_plot_peaks(peaks, func_opts):
 
 # 运行测试
 if __name__ == "__main__":
+
+    # 创建包含平台区域的图像
+    image_with_plateau = np.array([
+        [1, 1, 1, 2, 3],
+        [1, 5, 5, 4, 3],  # 平台区域：两个相邻的5
+        [2, 5, 5, 4, 2],
+        [3, 4, 4, 3, 1]
+    ])
+
+    maxima = local_maxima(image_with_plateau, connectivity=2)
+    print("平台区域处理结果：")
+    print(maxima.astype(int))
+
+
     # 测试峰值搜索
     peaks, func_opts = test_peak_searching()
 

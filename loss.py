@@ -20,9 +20,10 @@ def basic_parameter_loss(tau_pred, f_pred, tau_true, f_true, confidences, L_true
             tau_loss = F.mse_loss(tau_pred[b, :L], tau_true[b, :L])
             f_loss = F.mse_loss(f_pred[b, :L], f_true[b, :L])
             # 对存在目标的预测，鼓励其置信度趋近于1
-            confidence_loss = F.mse_loss(confidences[b, :L], torch.ones(L, device=confidences.device))
+            # confidence_loss = F.mse_loss(confidences[b, :L], torch.ones(L, device=confidences.device))
 
-            loss = tau_loss + f_loss + 0.1 * confidence_loss
+            # loss = tau_loss + f_loss + 0.1 * confidence_loss
+            loss = tau_loss + f_loss
 
         total_loss += loss
 
@@ -48,11 +49,13 @@ class BasicANMLoss(nn.Module):
         param_loss = basic_parameter_loss(tau_pred, f_pred, tau_true, f_true, confidences, L_true)
 
         # 2. 轻量正则化（可选，用于稳定训练）
-        reg_loss = self.lambda_reg * torch.mean(torch.norm(phi_final, dim=1))
+        # reg_loss = self.lambda_reg * torch.mean(torch.norm(phi_final, dim=1))
 
-        total_loss = param_loss + reg_loss
+        # total_loss = param_loss + reg_loss
+        total_loss = param_loss
 
-        loss_dict = {'total_loss': total_loss, 'param_loss': param_loss, 'reg_loss': reg_loss}
+        # loss_dict = {'total_loss': total_loss, 'param_loss': param_loss, 'reg_loss': reg_loss}
+        loss_dict = {'total_loss': total_loss, 'param_loss': param_loss}
 
         return total_loss, loss_dict
 

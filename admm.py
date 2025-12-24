@@ -140,7 +140,7 @@ def admm_for_us_H_cvx_0(GK_hat, ZK_hat, rho, xbase, ybase, sigma):
 
     # 求解
     prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.SCS, verbose=False)
+    prob.solve(solver=cp.ECOS, verbose=False)
 
     # 检查求解状态
     if prob.status not in ["optimal", "optimal_inaccurate"]:
