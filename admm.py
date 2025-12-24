@@ -127,15 +127,9 @@ def admm_for_us_H_cvx_0(GK_hat, ZK_hat, rho, xbase, ybase, sigma):
     # 目标函数：最小化 ||H - diag(GK_hat + ZK_hat/rho)||_F
     objective = cp.Minimize(cp.norm(H - diag_GZ, 'fro'))
 
-    # 引入额外约束条件以适配cvxpy
-    t = cp.Variable()
-
     # 约束条件
     constraints = [
-        t * (2 * np.sqrt(Nb * Nd) * sigma + sigma ** 2) + cp.sum(H) <= 1,
-        H <= t,
-        -H <= t,
-        t >= 0
+        cp.norm(H, 'inf') * (2 * np.sqrt(Nb*Nd) * sigma + sigma**2) + cp.sum(H) <= 1
     ]
 
     # 求解

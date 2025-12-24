@@ -1,20 +1,24 @@
 import numpy as np
 
 
-def vander_vec(start, step, length):
+def vander_vec(x, y, length):
     """
     替代MATLAB中的vander_vec函数，生成范德蒙向量
 
     参数:
-        start: 起始值（在当前实现中未使用）
-        step: 步长值，用于计算指数部分的系数
-        length: 向量长度，决定生成数组的元素个数
+        x: 起始频率
+        y: 末端频率
+        length: 向量长度
 
     返回值:
         numpy.ndarray: 复数类型的范德蒙向量，包含length个元素
     """
+    # 生成等间距频率点
+    fre = np.linspace(x, y, length)
+    # 计算复数指数
+    output = np.exp(1j * 2 * np.pi * fre)
     # 生成范德蒙向量：e^(j*2*π*step*[0,1,2,...,length-1])
-    return np.exp(1j * 2 * np.pi * step * np.arange(length))
+    return output.reshape(-1, 1)
 
 
 def kr(A, B):

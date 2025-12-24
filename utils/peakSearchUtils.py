@@ -158,20 +158,17 @@ def alt_peak_search(func_opts, opts=None):
             local_X, local_Y = np.meshgrid(local_x, local_y)
             local_Z = peak_search(phi, local_X, x_base, local_Y, y_base)
 
-            # 找出局部区域内最大响应及其索引
-            local_max_val = np.max(local_Z)
-            max_pos = np.unravel_index(np.argmax(local_Z), local_Z.shape)
-
             # 修正
             local_Z_max = np.max(local_Z)
             # 创建掩码，只保留最大值位置
             local_Z_mask = (local_Z == local_Z_max)
             max_positions = np.where(local_Z_mask)
-
-            # 更新该峰值的最佳估计值：位置和幅值
-            refined_result[k, 0] = local_X[max_pos]  # x位置
-            refined_result[k, 1] = local_Y[max_pos]  # y位置
-            refined_result[k, 2] = local_max_val     # 峰值高度
+            if len(max_positions[0]) > 0:
+                # 获取最大值位置
+                max_pos = (max_positions[0][0], max_positions[1][0])
+                refined_result[k, 0] = local_X[max_pos]
+                refined_result[k, 1] = local_Y[max_pos]
+                refined_result[k, 2] = local_Z_max
 
     return refined_result
 
@@ -190,6 +187,7 @@ def find_regional_maxima(image, footprint=None):
 
     # 局部极大值点是那些等于滤波后图像值的点（且不是背景）
     regional_max = (image == image_max)
+
     # # 去除边缘效应（可选）
     # regional_max = regional_max & (image > 0)  # 只保留正值区域
 
@@ -351,6 +349,7 @@ def test_peak_searching():
     len_val = 400  # Nb * Nd = 20 * 20
     # phi = np.random.randn(len_val) + 1j * np.random.randn(len_val)
     phi = np.zeros(len_val)
+    phi[2] = 1
     # phi = phi / np.linalg.norm(phi)  # 归一化
 
     # 设置函数参数

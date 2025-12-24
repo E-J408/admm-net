@@ -20,8 +20,8 @@ def main():
     D = np.zeros((Nd, L), dtype=complex)
 
     for i in range(L):
-        S[:, i] = vander_vec(0, (Nb - 1) * f[i], Nb)
-        D[:, i] = vander_vec(0, (Nd - 1) * tau[i], Nd)
+        S[:, i] = vander_vec(0, (Nb - 1) * f[i], Nb).reshape(-1)
+        D[:, i] = vander_vec(0, (Nd - 1) * tau[i], Nd).reshape(-1)
 
     print(f"c shape:{C.shape}")
     print(f"C reshape:{C.reshape(-1, 1).shape}")
@@ -92,6 +92,7 @@ def main():
     print(f"y的维度: {y.flatten().shape}")
     print(f"b的维度: {b.shape}")
     phi, iterations = admm_for_us(y, b, Nd, Nb, lambda_val, sigma, opts)
+    print(phi.shape)
 
     print(f"算法完成，迭代次数: {iterations}")
 
