@@ -20,10 +20,10 @@ def basic_parameter_loss(tau_pred, f_pred, tau_true, f_true, confidences, L_true
             tau_loss = F.mse_loss(tau_pred[b, :L], tau_true[b, :L])
             f_loss = F.mse_loss(f_pred[b, :L], f_true[b, :L])
             # 对存在目标的预测，鼓励其置信度趋近于1
-            # confidence_loss = F.mse_loss(confidences[b, :L], torch.ones(L, device=confidences.device))
+            confidence_loss = F.mse_loss(confidences[b, :L], torch.ones(L, device=confidences.device))
 
-            # loss = tau_loss + f_loss + 0.1 * confidence_loss
-            loss = tau_loss + f_loss
+            loss = tau_loss + f_loss + 0.1 * confidence_loss
+            # loss = tau_loss + f_loss
 
         total_loss += loss
 
@@ -49,14 +49,53 @@ class BasicANMLoss(nn.Module):
         param_loss = basic_parameter_loss(tau_pred, f_pred, tau_true, f_true, confidences, L_true)
 
         # 2. 轻量正则化（可选，用于稳定训练）
-        # reg_loss = self.lambda_reg * torch.mean(torch.norm(phi_final, dim=1))
+        reg_loss = self.lambda_reg * torch.mean(torch.norm(phi_final, dim=1))
 
-        # total_loss = param_loss + reg_loss
-        total_loss = param_loss
+        total_loss = param_loss + reg_loss
+        # total_loss = param_loss
 
-        # loss_dict = {'total_loss': total_loss, 'param_loss': param_loss, 'reg_loss': reg_loss}
-        loss_dict = {'total_loss': total_loss, 'param_loss': param_loss}
+        loss_dict = {'total_loss': total_loss, 'param_loss': param_loss, 'reg_loss': reg_loss}
+        # loss_dict = {'total_loss': total_loss, 'param_loss': param_loss}
 
         return total_loss, loss_dict
+
+class PhiAlignmentLoss(nn.Module):
+    def __init__(self, amplitude_weight=1.0, phase_weight=0.5, spectral_weight=0.2, distribution_weight=0.3):
+        super().__init__()
+        self.amplitude_weight = amplitude_weight
+        self.phase_weight = phase_weight
+        self.spectral_weight = spectral_weight
+        self.distribution_weight = distribution_weight
+
+    def forward(self, phi_final, phi_true):
+        # # 基础MSE损失
+        # mse_loss = F.mse_loss(phi_final, phi_true)
+
+        # 幅度谱损失
+        amplitude_final = torch.abs(phi_final)
+        amplitude_true = torch.abs(phi_true)
+        amplitude_loss = F.mse_loss(amplitude_final, amplitude_true)
+
+        # 相位损失
+        phase_final = torch.angle(phi_final)
+        phase_true = torch.angle(phi_true)
+        # 处理相位环绕问题
+        phase_diff = phase_final - phase_true
+        # 环绕到[-pi, pi]
+        phase_diff = (phase_diff + torch.pi) % (2 * torch.pi) - torch.pi
+        phase_loss = F.mse_loss(phase_diff, torch.zeros_like(phase_diff))
+
+        # 加权组合各部分损失
+        total_loss = (self.amplitude_weight * amplitude_loss +
+                      self.phase_weight * phase_loss)
+        loss_dict = {
+            'total_loss': total_loss,
+            # 'mse_loss': mse_loss,
+            'amplitude_loss': amplitude_loss,
+            'phase_loss': phase_loss
+        }
+
+        return total_loss, loss_dict
+
 
 

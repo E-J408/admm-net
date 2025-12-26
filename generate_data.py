@@ -98,7 +98,8 @@ class OFDMDatasetGenerator:
             'C_real': np.zeros((n_samples, self.L_max), dtype=np.float32),
             'C_imag': np.zeros((n_samples, self.L_max), dtype=np.float32),
             'L_true': np.zeros((n_samples,), dtype=np.int32),
-            'sigma': np.zeros((n_samples,), dtype=np.float32)
+            'sigma': np.zeros((n_samples,), dtype=np.float32),
+            'ser': np.zeros((n_samples,), dtype=np.float32)
         }
 
         for i in range(n_samples):
@@ -125,6 +126,7 @@ class OFDMDatasetGenerator:
             data_dict['C_imag'][i, :L] = sample['C'].imag
             data_dict['L_true'][i] = L
             data_dict['sigma'][i] = sample['sigma']
+            data_dict['ser'][i] = sample['ser']
 
         return data_dict
 
@@ -335,12 +337,11 @@ class OFDMDatasetGenerator:
         axes[1, 0].set_xlabel('多普勒频率 f')
         axes[1, 0].set_ylabel('频次')
 
-        # 信噪比分布
-        sigma = np.load(self.data_dir / 'train' / 'sigma.npy')
-        snr_db = -20 * np.log10(sigma)
-        axes[1, 1].hist(snr_db, bins=20, alpha=0.7)
-        axes[1, 1].set_title('信噪比分布')
-        axes[1, 1].set_xlabel('信噪比 (dB)')
+        # SER分布
+        ser = np.load(self.data_dir / 'train' / 'ser.npy')
+        axes[1, 1].hist(ser, bins=20, alpha=0.7)
+        axes[1, 1].set_title('误符号率分布')
+        axes[1, 1].set_xlabel('%')
         axes[1, 1].set_ylabel('频次')
 
         plt.tight_layout()
@@ -372,7 +373,8 @@ class DatasetGeneratorCreatePhi(OFDMDatasetGenerator):
             'L_true': np.zeros((n_samples,), dtype=np.int32),
             'sigma': np.zeros((n_samples,), dtype=np.float32),
             'phi_real': np.zeros((n_samples, self.Nb * self.Nd), dtype=np.float32),
-            'phi_imag': np.zeros((n_samples, self.Nb * self.Nd), dtype=np.float32)
+            'phi_imag': np.zeros((n_samples, self.Nb * self.Nd), dtype=np.float32),
+            'ser': np.zeros((n_samples,), dtype=np.float32)
         }
 
         for i in range(n_samples):
@@ -401,6 +403,7 @@ class DatasetGeneratorCreatePhi(OFDMDatasetGenerator):
             data_dict['sigma'][i] = sample['sigma']
             data_dict['phi_real'][i] = sample['phi'].real
             data_dict['phi_imag'][i] = sample['phi'].imag
+            data_dict['ser'][i] = sample['ser']
 
         return data_dict
 

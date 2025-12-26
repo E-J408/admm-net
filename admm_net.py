@@ -721,6 +721,47 @@ class PeakSearchLayer(nn.Module):
 
 
 
+class PhiEstADMMNet(nn.Module):
+    """仅估计Phi的ADMM-Net，不包含谱峰搜索层"""
+    def __init__(self, M, N, L=3, num_layers=10):
+        super(PhiEstADMMNet, self).__init__()
+        self.num_layers = num_layers
+        self.M, self.N, self.L = M, N, L
+        self.phiLayers = nn.ModuleList([
+            PhiLayer() for _ in range(num_layers)
+        ])
+        self.hLayers = nn.ModuleList([
+            HLayer(M, N) for _ in range(num_layers)
+        ])
+        self.gLayers = nn.ModuleList([
+            GLayer(M, N) for _ in range(num_layers)
+        ])
+        self.zLayers = nn.ModuleList([
+            ZLayer(M, N) for _ in range(num_layers)
+        ])
+    def forward(self, y, b, sigma):
+        """
+
+                :param y: 观测向量
+                :param b: 解调符号
+                :param sigma: 噪声上限
+                """
+        batch_size = y.shape[0]
+        M = self.M
+        N = self.N
+        device = y.device
+        G = torch.zeros(batch_size, M * N + 1, M * N + 1, device=device)
+        Z = torch.zeros(batch_size, M * N + 1, M * N + 1, device=device)
+        phi = torch.zeros(batch_size, M * N)
+
+        for k in range(self.num_layers):
+            # 第l层前向传播
+            phi = self.phiLayers[k](y, b, G, Z, k)
+            H = self.hLayers[k](phi, G, Z, sigma, k)
+            G = self.gLayers[k](phi, H, Z, k)
+            Z = self.zLayers[k](phi, H, G, Z, k)
+
+        return phi
 
 
 class ADMMNet(nn.Module):
