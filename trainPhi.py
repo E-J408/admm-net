@@ -28,8 +28,8 @@ def main(data_dir, train_name):
 
         # 训练参数
         'epochs': 1000,
-        'lr': 1e-3,
-        'weight_decay': 1e-4,
+        'lr': 5e-3,
+        'weight_decay': 1e-3,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
 
         # 模型保存参数
@@ -307,5 +307,5 @@ def main(data_dir, train_name):
 if __name__ == '__main__':
     # 训练名称
     cur_train_name = time.strftime("%Y%m%d-%H-%M")
-    cur_data_dir = 'data/phi_fixSNR20L3_1000'
+    cur_data_dir = 'data/phi_fixSNR20L3_1000_least5'
     main(cur_data_dir, cur_train_name)

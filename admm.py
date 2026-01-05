@@ -3,7 +3,7 @@ import cvxpy as cp
 from scipy.linalg import svd
 
 
-def admm_for_us(y, b, xbase, ybase, lambda_val, sigma, opts=None):
+def admm_for_us(y, b, xbase, ybase, lambda_val, sigma, opts=None, use_min_iter=True, min_iter=5):
     """
     Solve the joint delay-Doppler atomic minimization problem using ADMM
     使用ADMM解决时延-多普勒联合原子范数最小化问题
@@ -90,6 +90,10 @@ def admm_for_us(y, b, xbase, ybase, lambda_val, sigma, opts=None):
             np.hstack([phiK.conj().T, 1.0 / (lambda_val ** 2)])
         ])
         ZK = ZK + rho * (GK - HK_phi_block)
+
+        # 设置最小迭代次数
+        if use_min_iter and iter_count < min_iter:
+            continue
 
         # stopping criteria
         if iter_count > 1:
