@@ -5,10 +5,21 @@ import matplotlib.pyplot as plt
 def matlab_style_plots():
     """设置MATLAB风格的绘图"""
     # 设置中文
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False
+
+    # 设置字体大小
     plt.rcParams['font.size'] = 12
-    plt.rcParams['axes.linewidth'] = 1.5
+    plt.rcParams['axes.titlesize'] = 16  # 标题字体大小
+    plt.rcParams['axes.labelsize'] = 14  # 坐标轴标签大小
+    plt.rcParams['xtick.labelsize'] = 12  # x轴刻度标签大小
+    plt.rcParams['ytick.labelsize'] = 12  # y轴刻度标签大小
+    plt.rcParams['legend.fontsize'] = 12  # 图例字体大小
+    plt.rcParams['figure.titlesize'] = 18  # 图形总标题大小
+
+    # 设置线条宽度
+    plt.rcParams['lines.linewidth'] = 2.5
+    plt.rcParams['axes.linewidth'] = 1.2
     plt.rcParams['xtick.direction'] = 'in'
     plt.rcParams['ytick.direction'] = 'in'
     plt.rcParams['figure.figsize'] = [8, 6]
