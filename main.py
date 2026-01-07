@@ -2,6 +2,7 @@ from pathlib import Path
 from utils.mathUtils import *
 from utils.peakSearchUtils import *
 from admm import *
+from utils.plotUtils import plot_predictions_vs_truth
 
 
 def main():
@@ -115,6 +116,15 @@ def main():
     print(f"找到 {len(res_admm)} 个峰值:")
     for i, peak in enumerate(res_admm):
         print(f"{i + 1}. {peak}")
+    # 按照数量过滤
+    res_admm = res_admm[:3]
+    plot_predictions_vs_truth(f, tau, res_admm)
+    ground_truth_dict = {
+        'f': f,
+        'tau': tau,
+    }
+    plot_peaks(alt_peak_search_base, ground_truth_dict)
+
 
 
 

@@ -286,8 +286,9 @@ def plot_peaks(func_opts, ground_truth, opts=None):
         peak_y = axis_Y[peak_positions]
         peak_z = 2 * axis_Z_peak[peak_positions]  # 适当抬高标记
 
-        ax.scatter(peak_x, peak_y, peak_z, c='red', marker='x', s=100,
+        ax.scatter(peak_x, peak_y, peak_z, c='blue', marker='*', s=50, alpha=0.3,
                    label=custom_legend, depthshade=False)
+
 
     # 绘制真实峰值位置
     truth_positions = np.where(axis_Z_truth > 0)
@@ -296,8 +297,13 @@ def plot_peaks(func_opts, ground_truth, opts=None):
         truth_y = axis_Y[truth_positions]
         truth_z = 2 * axis_Z_max * np.ones_like(truth_x)  # 在最高点标记
 
-        ax.scatter(truth_x, truth_y, truth_z, c='blue', marker='^', s=100,
+        ax.scatter(truth_x, truth_y, truth_z, c='red', marker='o', s=100,
                    label='Ground truth', depthshade=False)
+
+        # 绘制垂直线
+        for i in range(len(truth_x)):
+            ax.plot([truth_x[i], truth_x[i]], [truth_y[i], truth_y[i]], [0, truth_z[i]], color='black',
+                    linewidth=0.5, linestyle='--')
 
     # 设置标签和标题
     ax.set_xlabel('Delay (norm)')
@@ -320,23 +326,36 @@ def plot_peaks(func_opts, ground_truth, opts=None):
 
 def ground_truth_matrix(tau, f, axis_X, axis_Y, xstep, ystep):
     """
-    生成真实峰值位置矩阵
-    在真实峰值位置附近的小区域内设置为1，其他位置为0
+    在plotPeaks.m中调用，产生真实2维tau、f的stem图所用的矩阵数据
+    横轴X为tau，纵轴Y为f
     """
-    result = np.zeros_like(axis_X)
-    threshold = min(xstep, ystep) * 0.5  # 容差阈值
+    array_reg = np.zeros((axis_Y.shape[0], axis_X.shape[1]))
 
-    for t, freq in zip(tau, f):
-        # 找到距离真实峰值最近的网格点
-        dist = np.sqrt((axis_X - t) ** 2 + (axis_Y - freq) ** 2)
-        min_dist_pos = np.unravel_index(np.argmin(dist), dist.shape)
+    for idx1 in range(axis_Y.shape[0]):
+        for idx2 in range(axis_X.shape[1]):
+            array_reg[idx1, idx2] = ground_truth_matrix_func(
+                tau, f, axis_X[idx1, idx2], axis_Y[idx1, idx2], xstep, ystep
+            )
 
-        # 如果距离足够近，则标记该点
-        if dist[min_dist_pos] <= threshold:
-            result[min_dist_pos] = 1
+    return array_reg
 
-    return result
 
+def ground_truth_matrix_func(tau, f, x, y, xstep, ystep):
+    """
+    peakSearchFunc
+    横轴X为tau,纵轴Y为f。
+    step为间隔，作为判定标准。
+    """
+    L = len(tau)
+    x_std = xstep / 2
+    y_std = ystep / 2
+
+    reg = 0
+    for idx in range(L):
+        if abs(x - tau[idx]) < x_std and abs(y - f[idx]) < y_std:
+            reg = 1
+
+    return reg
 
 def test_peak_searching():
     """测试峰值搜索功能"""
@@ -397,6 +416,8 @@ def test_plot_peaks(peaks, func_opts):
     fig, ax = plot_peaks(func_opts, ground_truth, plot_opts)
 
     return fig, ax
+
+
 
 
 # 运行测试

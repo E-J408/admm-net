@@ -126,6 +126,11 @@ def main():
     res_admm = res_admm[:3]
     print(res_admm)
     plot_predictions_vs_truth(f, tau, res_admm)
+    ground_truth_dict = {
+        'f': f,
+        'tau': tau,
+    }
+    plot_peaks(alt_peak_search_base, ground_truth_dict)
 
 
 
